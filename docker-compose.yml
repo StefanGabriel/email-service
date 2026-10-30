@@ -1,0 +1,34 @@
+# Homelab: Postgres + Postbox, published through a Cloudflare Tunnel.
+# Set POSTBOX_SECRET_KEY and CLOUDFLARE_TUNNEL_TOKEN in a .env file next to this one.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postbox
+      POSTGRES_PASSWORD: postbox
+      POSTGRES_DB: postbox
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  postbox:
+    build: .
+    environment:
+      DATABASE_URL: postgresql://postbox:postbox@db:5432/postbox
+      POSTBOX_SECRET_KEY: ${POSTBOX_SECRET_KEY:?set POSTBOX_SECRET_KEY}
+    depends_on:
+      - db
+    restart: unless-stopped
+
+  cloudflared:
+    image: cloudflare/cloudflared:2025.10.0
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?set CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - postbox
+    restart: unless-stopped
+    profiles: [tunnel]
+
+volumes:
+  pgdata:

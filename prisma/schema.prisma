@@ -1,0 +1,190 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+  moduleFormat        = "esm"
+  importFileExtension = "js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// A customer of the SaaS. Every other row hangs off a tenant.
+model Tenant {
+  id          String       @id @default(cuid())
+  name        String
+  slug        String       @unique
+  createdAt   DateTime     @default(now())
+  apiKeys     ApiKey[]
+  domains     Domain[]
+  connections Connection[]
+  senders     Sender[]
+  templates   Template[]
+  messages    Message[]
+  suppressions Suppression[]
+}
+
+model ApiKey {
+  id         String    @id @default(cuid())
+  tenantId   String
+  tenant     Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name       String
+  prefix     String    // first characters, shown in the UI to tell keys apart
+  hash       String    @unique // sha256 of the full key; the key itself is never stored
+  createdAt  DateTime  @default(now())
+  lastUsedAt DateTime?
+  revokedAt  DateTime?
+}
+
+model Domain {
+  id                  String      @id @default(cuid())
+  tenantId            String
+  tenant              Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name                String
+  verificationToken   String      @default(cuid())
+  verifiedAt          DateTime?
+  defaultConnectionId String?
+  defaultConnection   Connection? @relation(fields: [defaultConnectionId], references: [id], onDelete: SetNull)
+  senders             Sender[]
+  createdAt           DateTime    @default(now())
+
+  @@unique([tenantId, name])
+}
+
+enum ConnectionType {
+  smtp
+  resend
+  brevo
+  sendgrid
+  log
+}
+
+// How mail leaves Postbox. Credentials are encrypted with POSTBOX_SECRET_KEY.
+model Connection {
+  id                   String         @id @default(cuid())
+  tenantId             String
+  tenant               Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name                 String
+  type                 ConnectionType
+  encryptedCredentials String
+  dailyLimit           Int?
+  fallbackId           String?
+  fallback             Connection?    @relation("Fallback", fields: [fallbackId], references: [id], onDelete: SetNull)
+  fallbackFor          Connection[]   @relation("Fallback")
+  defaultFor           Domain[]
+  senders              Sender[]
+  messages             Message[]
+  createdAt            DateTime       @default(now())
+
+  @@unique([tenantId, name])
+}
+
+model Sender {
+  id           String      @id @default(cuid())
+  tenantId     String
+  tenant       Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  domainId     String
+  domain       Domain      @relation(fields: [domainId], references: [id], onDelete: Cascade)
+  key          String      // stable id used by API callers, e.g. "noreply"
+  fromName     String
+  fromLocal    String      // part before @; the domain comes from `domain`
+  replyTo      String?
+  connectionId String?     // overrides the domain's default connection
+  connection   Connection? @relation(fields: [connectionId], references: [id], onDelete: SetNull)
+  templates    Template[]
+  createdAt    DateTime    @default(now())
+
+  @@unique([tenantId, key])
+}
+
+enum Category {
+  transactional
+  marketing
+}
+
+model Template {
+  id            String            @id @default(cuid())
+  tenantId      String
+  tenant        Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  key           String            // e.g. "account.verify-email"
+  name          String
+  category      Category          @default(transactional)
+  senderId      String
+  sender        Sender            @relation(fields: [senderId], references: [id])
+  defaultLocale String            @default("en")
+  // Declared variables: [{ name, required, sample }]
+  variables     Json              @default("[]")
+  versions      TemplateVersion[]
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  @@unique([tenantId, key])
+}
+
+// One row per saved edit of one locale. The published row is what gets sent.
+model TemplateVersion {
+  id          String    @id @default(cuid())
+  templateId  String
+  template    Template  @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  locale      String
+  version     Int
+  subject     String
+  bodyMjml    String
+  bodyText    String?
+  publishedAt DateTime?
+  createdAt   DateTime  @default(now())
+  messages    Message[]
+
+  @@unique([templateId, locale, version])
+  @@index([templateId, locale, publishedAt])
+}
+
+enum MessageStatus {
+  queued
+  sending
+  sent
+  failed
+  suppressed
+}
+
+model Message {
+  id                String           @id @default(cuid())
+  tenantId          String
+  tenant            Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  templateVersionId String
+  templateVersion   TemplateVersion  @relation(fields: [templateVersionId], references: [id])
+  idempotencyKey    String?
+  toEmail           String
+  toName            String?
+  fromEmail         String
+  fromName          String
+  replyTo           String?
+  subject           String
+  html              String
+  text              String?
+  tags              String[]         @default([])
+  status            MessageStatus    @default(queued)
+  attempts          Int              @default(0)
+  nextAttemptAt     DateTime         @default(now())
+  connectionId      String?          // the connection that delivered it
+  connection        Connection?      @relation(fields: [connectionId], references: [id], onDelete: SetNull)
+  preferredConnectionId String
+  providerMessageId String?
+  lastError         String?
+  createdAt         DateTime         @default(now())
+  sentAt            DateTime?
+
+  @@unique([tenantId, idempotencyKey])
+  @@index([status, nextAttemptAt])
+}
+
+model Suppression {
+  id        String   @id @default(cuid())
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  email     String
+  reason    String   // bounce, complaint, unsubscribe, manual
+  createdAt DateTime @default(now())
+
+  @@unique([tenantId, email])
+}
